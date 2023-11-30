@@ -1,0 +1,281 @@
+---
+title: "UMD Crime Story"
+author: "Alisha Camacho"
+date: "2023-11-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries and establish settings
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(sf)
+library(janitor)
+library(tigris)
+library(lubridate)
+library(janitor)
+```
+
+**Load and clean .csv files downloaded from excel**
+
+#1 load in 2023 incident log and arrest log .csv file
+
+This .csv file includes all incident and arrest reports. The following is included: umpd case number, date and time of occurrence, the report date, address, and the incident type. I am interested in the case number, occurrence date, incident type and disposition. 
+
+New data frame after cleaning: **incident_arrest_log**
+
+```{r}
+
+incident_arrest_log <- read.csv("/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/2023_incident_logs_and_arrest_log_all.csv") |> 
+  clean_names() |> 
+  rename(address = column6) |> 
+  mutate(date = substr(occurred_date_time_location, 1, 8)) |> 
+  mutate(date_incident = mdy(date)) |> 
+  mutate(disposition = str_to_lower(disposition)) |> 
+  mutate(type = str_to_lower(type)) |> 
+  select(umpd_case_number, type, disposition, date_incident) 
+
+incident_arrest_log
+```
+
+#looking at missing rows via parse warning
+
+Upon looking at the rows that failed to parse, they can be removed/are not relevant and should have been removed when cleaning the initial .csv file. 
+
+```{r}
+
+failed_rows <- incident_arrest_log |> 
+  filter(is.na(date_incident))
+
+failed_rows
+```
+
+
+#2 load and clean 2023 arrest log without the notes
+This .csv file contains the umpd case number, arrest number, race, sex, and arrest date for arrests made in 2023. I cleaning this data frame and preparing it to be joined with the .csv file that contains the corresponding notes to the arrests in case those prove to be insightful. 
+
+New data frame after cleaning: **arrest_log_no_notes**
+
+```{r}
+arrest_log_no_notes <- read.csv("/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/2023_Arrest_Log.csv") |> 
+  clean_names() |> 
+  mutate(date = substr(arrested_date_time_charge, 1, 8)) |> 
+  mutate(arrest_date = mdy(date)) |> 
+  mutate(race = str_to_lower(race)) |> 
+  mutate(sex = str_to_lower(sex)) |>
+  mutate(arrest_number = as.character(arrest_number)) |> 
+  select(umpd_case_number, arrest_number, race, sex, arrest_date)
+  
+glimpse(arrest_log_no_notes)
+
+```
+#looking at the 5 rows that failed to parse
+
+Upon looking at the rows that failed to parse, they can be removed/are not relevant and should have been removed when cleaning the initial .csv file. 
+
+
+```{r}
+failed_rows_arrest_log_no_notes <- arrest_log_no_notes |> 
+  filter(is.na(arrest_date))
+
+failed_rows_arrest_log_no_notes
+
+```
+
+
+#3 load and clean arrest log notes
+This .csv file contains the arrest number and corresponding notes. the notes will need to be cleaned further in open refine. 
+
+New data frame after cleaning: **arrest_log_notes**
+
+```{r}
+arrest_log_notes <- read.csv("/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/2023_Arrest_Log_Notes.csv")
+
+arrest_log_notes <- arrest_log_notes |> 
+  clean_names() |> 
+  mutate(arrest_number = as.character(arrest_number))
+  
+arrest_log_notes
+                      
+```
+
+#4 prepare to join the arrest data frames with and without notes into one data frame via the arrest number column
+original data frames: arrest_log_notes & arrest_log_no_notes
+
+new data frame for arrest log is **arrest_log_joined** 
+
+```{r}
+
+arrest_log_joined <- arrest_log_notes |> 
+  inner_join(arrest_log_no_notes, by = "arrest_number")
+
+arrest_log_joined
+```
+
+####
+
+#join the new arrest log data frame with the incident and arrest log
+
+data frames used: 
+*arrest_log_joined*
+*incident_arrest_log*
+
+new data frame **umd_logs**
+
+```{r}
+
+umd_logs <- incident_arrest_log |> 
+  left_join(arrest_log_joined, by = "umpd_case_number")
+
+umd_logs
+
+```
+
+**Look at incident types  and add new column "type_detail"**
+
+#1 
+
+The first thing I did was remove "title ix related" and the details accompanying "assist other agency" from the type column and into a new column "type_detail." This will allow us to better sort categorize the incident types  without losing the detailed information. 
+
+new data frame = **umd_logs2**
+
+```{r}
+
+umd_logs2 <- umd_logs %>%
+  mutate(type_detail = case_when(
+    str_detect(type, "\\(title ix related\\)") ~ "title ix related",
+    str_detect(type, "assist other agency") ~ str_remove(type, "assist other agency / "),
+    TRUE ~ NA_character_
+  )) %>%
+  separate(type, into = c("type", "type_detail"), sep = " / ", extra = "merge") %>%
+  arrange(type_detail)
+
+umd_logs2
+
+```
+#2
+
+The second thing I did was look at the umd_logs2 data frame to see whether any umdpd case numbers were being duplicated/repeated, and they were. So I combined the rows with the same umpd_case_number while merging the information in the other columns.
+
+update data frame is **umd_logs3**
+
+```{r}
+
+umd_logs3 <- umd_logs2 |> 
+  group_by(umpd_case_number) %>%
+  summarise_all(~ paste(unique(.), collapse = ", ")) 
+
+umd_logs3
+
+#umd_logs3 |> 
+#  group_by(umpd_case_number) |> 
+#  summarise(count = n()) |> 
+#  arrange(desc(count))
+
+```
+#3
+
+Now the data frame, umd_logs3, is ready to be exported to open refine cluster and edit cells into the same categories. To do this, I exported the data frame as a .csv file and cleaned in open refine. From there, I opened the .csv file and manually cleaned the type categories for consistency, while adding details to the "type_detail" column. 
+
+
+```{r}
+write.csv(umd_logs3, "/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/umd_logs3.csv")
+
+```
+
+#4
+
+I am loading the updated .csv file, umd_logs3_revised.csv , to extract the top 20 and top 10 rows with the most incident counts, and prepare for export into datawrapper. 
+
+By using the arrange function, I saw that the top 20 is equal to or greater than a count of 16, which is how I extracted the top 20 from the list. The top 10 included values greater than or equal to 28. 
+
+```{r}
+
+umd_logs3_revised <- read.csv("/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/umd_logs3_revised.csv")
+
+top_20 <- umd_logs3_revised |> 
+  group_by(type) |> 
+  summarise(count = n()) |> 
+  filter(count >= 16)
+
+top_20 <- top_20 |> 
+  rename(Incident = type) |> 
+  rename(Count = count) |> 
+  mutate(Incident = str_to_upper(Incident)) |> 
+  arrange(desc(Count))
+
+top_20
+
+write.csv(top_20, "/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/top_20.csv")
+
+```
+
+
+```{r}
+
+top_10 <- top_20 |> 
+  filter(Count >= 28)
+
+top_10
+
+write.csv(top_10, "/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/top_10.csv")
+
+```
+
+#incidents over time (by month)
+
+I also wanted to look at when the incidents occurred by month in 2023
+
+```{r}
+
+incident_by_month <- umd_logs3_revised |> 
+  mutate(date_incident =ymd(date_incident)) |> 
+  select(date_incident, type) |> 
+  arrange(date_incident) |> 
+  filter(str_detect(date_incident, "2023-")) |> 
+  mutate(month_name = month(date_incident)) |> 
+  group_by(month_name) |> 
+  summarise(count = n())|>
+  arrange(month_name) |> 
+  mutate(month_name = month.abb[month_name]) |> 
+  rename(Month = month_name) |> 
+  rename("Incident Count" = count)
+  
+incident_by_month
+
+write.csv(incident_by_month, "/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/incident_by_month.csv")
+
+```
+
+
+
+library(scales)
+
+#all 2023 incidents by disposition status
+
+I also wanted to look at the status of dispositions by percentage for 2023
+
+```{r}
+
+disposition_status<- umd_logs3_revised |> 
+  filter(str_detect(date_incident, "2023-")) |> 
+  group_by(disposition) |> 
+  summarise(count = n()) |> 
+  mutate(count_percent = (count/sum(count))) |> 
+  mutate(percentage = scales::percent(count_percent)) |> 
+  select(disposition, percentage) |> 
+  mutate(disposition = str_to_title(disposition)) |> 
+  rename("Disposition Status" = disposition) |> 
+  rename("Percentage" = percentage) 
+
+disposition_status
+
+write.csv(disposition_status, "/Volumes/ext4GB/UMD/PA/Beat Stories/UMD Crime Take II/data/disposition_status.csv")
+```
+
+
